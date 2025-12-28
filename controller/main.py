@@ -6,7 +6,6 @@ import importlib
 import sys
 import json
 import logging
-import animations
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -116,11 +115,19 @@ def load_generated_anim():
         logger.error(f"Hot-reload check failed: {e}")
     return False
 
+def anim_off(current_state, state, step, num_leds):
+    """Fallback safe animation: All LEDs off."""
+    return [(0, 0, 0)] * num_leds
+
 def animation_loop():
     global keep_running
     led_state = [(0, 0, 0)] * NUM_LEDS
     state = {}
     step = 0
+    
+    # Time tracking
+    start_time = time.monotonic()
+    last_frame_time = start_time
     
     logger.info("Starting animation loop...")
     
@@ -130,32 +137,51 @@ def animation_loop():
         anim_updated = load_generated_anim()
         
         current_mode = config.get("mode", "generated")
-        logger.debug(f"Animation loop active. Step: {step}, Mode: {current_mode}")
+        
+        # Time calculations
+        current_time = time.monotonic()
+        t = current_time - start_time
+        dt = current_time - last_frame_time
+        last_frame_time = current_time
+        
+        # Clamp dt to avoid huge jumps if thread paused (max 0.1s aka 10fps)
+        dt = min(dt, 0.1)
+
+        logger.debug(f"Animation loop active. Step: {step}, Mode: {current_mode}, t: {t:.2f}, dt: {dt:.3f}")
 
         # Reset state if animation source changed
         if anim_updated and current_mode == "generated":
              logger.info("Resetting animation state due to module update.")
              state = {}
+             # Reset time tracking for new animation? Optional. 
+             # Usually nicer to keep 't' running or reset it. Let's reset 't' for new anim.
+             start_time = time.monotonic()
+             t = 0.0
         
         if current_mode == "generated":
              if generated_module and hasattr(generated_module, 'anim_generated'):
                  try:
-                     led_state = generated_module.anim_generated(led_state, state, step, NUM_LEDS)
+                     # New Signature: (current_state, state, step, num_leds, dt, t)
+                     led_state = generated_module.anim_generated(led_state, state, step, NUM_LEDS, dt, t)
+                 except TypeError:
+                     # Fallback for old signature to prevent crash during transition testing?
+                     # User said "not backward compatible", but crashing loop is annoying.
+                     # Let's try-catch signature mismatch.
+                     try:
+                         led_state = generated_module.anim_generated(led_state, state, step, NUM_LEDS)
+                     except Exception as e:
+                         logger.error(f"Animation Signature Error: {e}")
+                         led_state = [(255, 0, 0)] * NUM_LEDS
                  except Exception as e:
                      logger.error(f"Animation Execution Error in 'anim_generated': {e}")
-                     # Visual Error Indication (Red flash)
                      led_state = [(255, 0, 0)] * NUM_LEDS
              else:
                  if step % 100 == 0:
                      logger.warning("Mode is 'generated' but module not loaded or function missing. Using OFF.")
-                 led_state = animations.anim_off(led_state, state, step, NUM_LEDS)
+                 led_state = anim_off(led_state, state, step, NUM_LEDS)
         else:
-            calc_func = animations.ANIMATION_MAP.get(current_mode, animations.anim_off)
-            try:
-                led_state = calc_func(led_state, state, step, NUM_LEDS)
-            except Exception as e:
-                 logger.error(f"Animation Execution Error in '{current_mode}': {e}")
-                 led_state = [(255, 0, 0)] * NUM_LEDS
+            # Fallback for any other mode or undefined state
+            led_state = anim_off(led_state, state, step, NUM_LEDS)
 
         push_to_strip(led_state)
         step += 1

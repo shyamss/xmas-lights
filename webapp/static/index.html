@@ -6,15 +6,31 @@
     <title>AI Holiday Lights</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Prism.js for Syntax Highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
     <style>
         body { background-color: #121212; color: #ffffff; }
         .card { background-color: #1e1e1e; border: 1px solid #333; margin-bottom: 10px; color: #ffffff; }
         .btn-primary { background-color: #bb86fc; border: none; color: #000; }
         .btn-primary:hover { background-color: #a370f7; }
+        .btn-secondary { background-color: #03dac6; border: none; color: #000; }
+        .btn-secondary:hover { background-color: #018786; }
         #loading { display: none; }
         .code-snippet { font-family: monospace; font-size: 0.8em; color: #888; }
         .history-item { cursor: pointer; transition: background-color 0.2s; }
         .history-item:hover { background-color: #2c2c2c; }
+        
+        /* Modal Customization */
+        .modal-content { background-color: #1e1e1e; color: white; border: 1px solid #333; }
+        .modal-header { border-bottom: 1px solid #333; }
+        .modal-footer { border-top: 1px solid #333; }
+        .btn-close { filter: invert(1); }
+        pre[class*="language-"] { max-height: 400px; }
     </style>
 </head>
 <body class="container py-5">
@@ -27,10 +43,27 @@
                     <label for="promptInput" class="form-label">Describe an Animation</label>
                     <textarea class="form-control bg-dark text-light" id="promptInput" rows="3" placeholder="e.g., A slow wave of blue and white moving left to right..."></textarea>
                 </div>
-                <button id="generateBtn" class="btn btn-primary w-100">Make it shine!</button>
+                <div class="d-flex gap-2">
+                    <button id="generateBtn" class="btn btn-primary flex-grow-1">Make it shine!</button>
+                </div>
+                
                 <div id="loading" class="text-center mt-3">
                     <div class="spinner-border text-light" role="status"></div>
                     <p>Asking Gemini to write Python...</p>
+                </div>
+            </div>
+
+            <div id="currentAnimContainer" class="mb-4" style="display:none;">
+                <h5 class="text-muted">Currently Playing</h5>
+                <div class="card p-3 border-success">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong id="currentPrompt" class="text-success">...</strong>
+                            <br>
+                            <small id="currentTimestamp" class="text-muted">...</small>
+                        </div>
+                        <button id="viewCurrentCodeBtn" class="btn btn-sm btn-outline-light">View Code</button>
+                    </div>
                 </div>
             </div>
 
@@ -41,8 +74,32 @@
         </div>
     </div>
 
+    <!-- Code View Modal -->
+    <div class="modal fade" id="codeModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Generated Python Code</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <pre><code id="modalCode" class="language-python"></code></pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         $(document).ready(function() {
+            const codeModal = new bootstrap.Modal(document.getElementById('codeModal'));
+            let historyData = []; // Store full history data including code
+
+            let currentAnimCode = "";
+
+            loadCurrentAnim();
             loadHistory();
 
             $('#generateBtn').click(function() {
@@ -62,8 +119,10 @@
                         $('#generateBtn').prop('disabled', false);
                         $('#promptInput').val('');
                         
-                        // Add to top of list immediately
-                        addHistoryItem(prompt, "Just now");
+                        const newItem = { prompt: prompt, timestamp: "Just now", code: response.code };
+                        historyData.unshift(newItem); 
+                        renderHistoryItem(newItem, true);
+                        updateCurrentAnimUI(newItem);
                     },
                     error: function(xhr) {
                         $('#loading').hide();
@@ -73,35 +132,148 @@
                 });
             });
 
+            function loadCurrentAnim() {
+                $.get('/current', function(data) {
+                    if (data && data.prompt) {
+                        updateCurrentAnimUI(data);
+                    }
+                });
+            }
+
+            function updateCurrentAnimUI(data) {
+                $('#currentAnimContainer').show();
+                $('#currentPrompt').text(data.prompt);
+                const dateStr = data.timestamp ? new Date(data.timestamp).toLocaleString() : 'Just now';
+                $('#currentTimestamp').text("Active since: " + dateStr);
+                currentAnimCode = data.code;
+            }
+
             function loadHistory() {
                 $.get('/history', function(data) {
+                    historyData = data;
                     $('#historyList').empty();
                     data.forEach(function(item) {
-                        addHistoryItem(item.prompt, item.timestamp);
+                        renderHistoryItem(item);
                     });
                 });
             }
 
-            function addHistoryItem(prompt, timestamp) {
-                const dateStr = timestamp ? new Date(timestamp).toLocaleString() : '';
+            function renderHistoryItem(item, prepend=false) {
+                const dateStr = item.timestamp ? new Date(item.timestamp).toLocaleString() : item.timestamp;
                 const html = `
-                    <div class="card p-3 fade-in history-item">
-                        <div class="d-flex justify-content-between">
-                            <strong>${prompt}</strong>
-                            <small class="text-muted">${dateStr}</small>
+                    <div class="card p-3 fade-in history-item" data-code="${encodeURIComponent(item.code || '')}" data-prompt="${encodeURIComponent(item.prompt || '')}">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div class="flex-grow-1">
+                                <strong>${item.prompt}</strong>
+                                <br>
+                                <small class="text-muted">${dateStr}</small>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-sm btn-success play-btn" style="z-index: 2;">▶ Play</button>
+                                <button class="btn btn-sm btn-outline-light view-code-btn" style="z-index: 2;">View Code</button>
+                            </div>
                         </div>
                     </div>
                 `;
-                $('#historyList').prepend(html);
+                
+                if (prepend) {
+                    $('#historyList').prepend(html);
+                } else {
+                    $('#historyList').append(html);
+                }
             }
 
-            // Click handler for history items
-            $('#historyList').on('click', '.history-item', function() {
+            // Click handler for history items (Copy prompt)
+            $('#historyList').on('click', '.history-item', function(e) {
+                if ($(e.target).hasClass('view-code-btn') || $(e.target).hasClass('play-btn')) return;
+
                 const promptText = $(this).find('strong').text();
                 $('#promptInput').val(promptText);
-                // Focus the input so the user can easily edit
                 $('#promptInput').focus();
             });
+
+            // Click handler for "View Code" buttons
+            $('#historyList').on('click', '.view-code-btn', function(e) {
+                e.stopPropagation(); 
+                const encodedCode = $(this).closest('.history-item').data('code');
+                const code = decodeURIComponent(encodedCode);
+                showCodeModal(code);
+            });
+
+            // Click handler for "Play" buttons (Redeploy)
+            $('#historyList').on('click', '.play-btn', function(e) {
+                e.stopPropagation();
+                const item = $(this).closest('.history-item');
+                const code = decodeURIComponent(item.data('code'));
+                const prompt = decodeURIComponent(item.data('prompt'));
+                
+                // Optimistic UI update
+                const originalText = $(this).text();
+                $(this).prop('disabled', true);
+
+                // Check for legacy signature
+                const legacySignature = "def anim_generated(current_state, state, step, num_leds):";
+                if (code.includes(legacySignature)) {
+                    if(!confirm("This animation uses an old format. Regenerate it with the new engine?")) {
+                        $(this).prop('disabled', false);
+                        return;
+                    }
+                    $(this).text("Upgrading...");
+                    // Call generate instead of deploy
+                    $.ajax({
+                        url: '/generate',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({ prompt: prompt }),
+                        success: function(response) {
+                            updateCurrentAnimUI({ prompt: prompt, code: response.code, timestamp: new Date().toISOString() });
+                            // Optionally reload history to show the new item
+                            loadHistory(); 
+                        },
+                        error: function(xhr) {
+                            alert("Upgrade failed: " + (xhr.responseJSON ? xhr.responseJSON.detail : "Unknown error"));
+                        },
+                        complete: function() {
+                            const btn = item.find('.play-btn'); 
+                            btn.text(originalText);
+                            btn.prop('disabled', false);
+                        }
+                    });
+                } else {
+                    // Standard Deploy
+                    $(this).text("Deploying...");
+                    $.ajax({
+                        url: '/deploy',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({ code: code, prompt: prompt }),
+                        success: function(response) {
+                            updateCurrentAnimUI({ prompt: prompt, code: code, timestamp: new Date().toISOString() });
+                        },
+                        error: function(xhr) {
+                            alert("Deploy failed: " + (xhr.responseJSON ? xhr.responseJSON.detail : "Unknown error"));
+                        },
+                        complete: function() {
+                            const btn = item.find('.play-btn'); 
+                            btn.text(originalText);
+                            btn.prop('disabled', false);
+                        }
+                    });
+                }
+            });
+
+            // View Current Code Button
+            $('#viewCurrentCodeBtn').click(function() {
+                if (currentAnimCode) {
+                    showCodeModal(currentAnimCode);
+                }
+            });
+
+            function showCodeModal(code) {
+                $('#modalCode').text(code);
+                Prism.highlightElement(document.getElementById('modalCode'));
+                codeModal.show();
+            }
         });
     </script>
 </body>

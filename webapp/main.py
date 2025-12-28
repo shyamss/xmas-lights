@@ -54,19 +54,21 @@ async def generate_animation(request: PromptRequest):
         t0 = time.time()
         model = GenerativeModel("gemini-2.5-flash")
         
-        system_prompt = """The PromptSystem Role: You are an expert Python developer specializing in procedural LED animations for holiday lighting.
+        system_prompt = """System Role: You are an expert Python developer specializing in procedural LED animations for holiday lighting.
 Environment Context:
 Execution Loop: The function anim_generated is called inside a high-frequency while loop (approx. 30-60 FPS).
 Spatial Orientation: The LED strip is wrapped around a tree. Index 0 is the absolute BOTTOM of the tree. Index num_leds - 1 is the absolute TOP.
 Physics Direction: "Downward" movement must decrement indices toward 0. "Upward" movement must increment indices toward num_leds - 1.
 
 Function Signature:
-def anim_generated(current_state, state, step, num_leds):
+def anim_generated(current_state, state, step, num_leds, dt, t):
     \"\"\"
     current_state: List of (r, g, b) tuples representing the frame currently displayed.
     state: Persistent dictionary to store variables like positions, velocities, or timers.
     step: Integer that increments by 1 every frame.
     num_leds: Integer count of the total LEDs.
+    dt: Float. Time in seconds since the last frame (e.g., 0.033). Use this for physics integration (pos += vel * dt).
+    t: Float. Total time in seconds since animation start. Use this for oscillators (sin(t)).
     Returns: A list of num_leds (r, g, b) tuples for the next frame.
     \"\"\"
 
@@ -81,7 +83,7 @@ Output Format: Output ONLY the python code for the function. No markdown formatt
 Animation Requirements:
 Smoothness: Use math functions (sine, cosine, power functions) for fluid motion rather than jittery random steps.
 Directional Accuracy: Respect the tree orientation (0=Bottom, Max=Top).
-Dynamics: Use step to drive time-based oscillations and the state dict to drive physics-based movement.
+Dynamics: Use 'dt' for physics integration and 't' for time-based waves/oscillations. Avoid using 'step' for timing if possible.
 User Theme: """
         
         full_prompt = f"{system_prompt} {prompt}"
@@ -132,13 +134,19 @@ User Theme: """
     # 3. Save to Firestore
     try:
         t2 = time.time()
+        # Save to history
         doc_ref = firestore_client.collection(FIRESTORE_COLLECTION).document()
-        doc_ref.set({
+        doc_data = {
             "prompt": prompt,
             "code": generated_code,
             "timestamp": datetime.datetime.now(datetime.timezone.utc),
             "file_url": public_url
-        })
+        }
+        doc_ref.set(doc_data)
+        
+        # Update current active animation
+        firestore_client.collection("system_state").document("active_animation").set(doc_data)
+        
         logger.info(f"Step 3 (Firestore Save) took {time.time() - t2:.2f}s")
     except Exception as e:
         logger.error(f"Firestore Error: {e}")
@@ -151,8 +159,59 @@ User Theme: """
         "status": "success", 
         "message": "Animation generated and deployed", 
         "url": public_url,
+        "code": generated_code,
         "code_snippet": generated_code[:200] + "..."
     }
+
+class DeployRequest(BaseModel):
+    code: str
+    prompt: str
+
+@app.post("/deploy")
+async def deploy_existing_code(request: DeployRequest):
+    """Redeploys existing code to GCS and updates current state."""
+    try:
+        t0 = time.time()
+        # 1. Upload to GCS
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob("current_anim.py")
+        blob.upload_from_string(request.code, content_type="text/x-python")
+        try:
+            blob.make_public()
+        except Exception:
+            pass
+        public_url = blob.public_url
+        
+        # 2. Update Firestore "active_animation"
+        doc_data = {
+            "prompt": request.prompt,
+            "code": request.code,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc),
+            "file_url": public_url
+        }
+        firestore_client.collection("system_state").document("active_animation").set(doc_data)
+        
+        logger.info(f"Deploy existing code took {time.time() - t0:.2f}s")
+        return {"status": "success", "message": "Animation redeployed", "url": public_url}
+        
+    except Exception as e:
+        logger.error(f"Deploy Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Deploy failed: {str(e)}")
+
+@app.get("/current")
+async def get_current_animation():
+    """Retrieves the currently active animation."""
+    try:
+        doc = firestore_client.collection("system_state").document("active_animation").get()
+        if doc.exists:
+            data = doc.to_dict()
+            if "timestamp" in data and data["timestamp"]:
+                data["timestamp"] = data["timestamp"].isoformat()
+            return data
+        return {} # No current animation set
+    except Exception as e:
+        logger.error(f"Error fetching current animation: {e}")
+        return {}
 
 @app.get("/history")
 async def get_history():
@@ -169,7 +228,8 @@ async def get_history():
             data = doc.to_dict()
             history.append({
                 "prompt": data.get("prompt"),
-                "timestamp": data.get("timestamp").isoformat() if data.get("timestamp") else None
+                "timestamp": data.get("timestamp").isoformat() if data.get("timestamp") else None,
+                "code": data.get("code")
             })
         return history
     except Exception as e:
