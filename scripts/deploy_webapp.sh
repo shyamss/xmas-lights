@@ -8,11 +8,12 @@ set -e
 
 PROJECT_ID=$1
 REGION=${2:-"us-central1"}
+WEBAPP_PASSWORD=${3:-"admin"}
 SERVICE_NAME="xmas-lights-web"
 SERVICE_ACCOUNT_NAME="xmas-lights-sa"
 
 if [ -z "$PROJECT_ID" ]; then
-    echo "Usage: ./scripts/deploy_webapp.sh <PROJECT_ID> [REGION]"
+    echo "Usage: ./scripts/deploy_webapp.sh <PROJECT_ID> [REGION] [PASSWORD]"
     exit 1
 fi
 
@@ -59,7 +60,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --project "$PROJECT_ID" \
     --region "$REGION" \
     --service-account "$SERVICE_ACCOUNT_EMAIL" \
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_REGION=us-central1" \
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_REGION=us-central1,WEBAPP_PASSWORD=$WEBAPP_PASSWORD" \
     --allow-unauthenticated
 
 echo "--------------------------------------------------------"

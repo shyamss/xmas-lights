@@ -3,17 +3,20 @@ import logging
 import datetime
 import time
 import re
+import secrets
 import vertexai
 from vertexai.generative_models import GenerativeModel
 from google.cloud import storage
 from google.cloud import firestore
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 # Initialize App
 app = FastAPI()
+security = HTTPBasic()
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +27,7 @@ PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "xmas-lights-demo")
 REGION = os.environ.get("GOOGLE_CLOUD_REGION", "us-central1")
 BUCKET_NAME = f"{PROJECT_ID}-animations"
 FIRESTORE_COLLECTION = "prompt_history"
+WEBAPP_PASSWORD = os.environ.get("WEBAPP_PASSWORD", "admin") # Default fallback if not set
 
 # Initialize GCP Clients
 try:
@@ -35,16 +39,32 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize GCP clients: {e}")
 
+# Auth Dependency
+def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, "admin")
+    correct_password = secrets.compare_digest(credentials.password, WEBAPP_PASSWORD)
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
 # Models
 class PromptRequest(BaseModel):
     prompt: str
 
+class DeployRequest(BaseModel):
+    code: str
+    prompt: str
+
 @app.get("/")
-async def read_root():
+async def read_root(username: str = Depends(verify_credentials)):
     return FileResponse('static/index.html')
 
 @app.post("/generate")
-async def generate_animation(request: PromptRequest):
+async def generate_animation(request: PromptRequest, username: str = Depends(verify_credentials)):
     prompt = request.prompt
     logger.info(f"Received prompt: {prompt}")
     start_time = time.time()
@@ -168,7 +188,7 @@ class DeployRequest(BaseModel):
     prompt: str
 
 @app.post("/deploy")
-async def deploy_existing_code(request: DeployRequest):
+async def deploy_existing_code(request: DeployRequest, username: str = Depends(verify_credentials)):
     """Redeploys existing code to GCS and updates current state."""
     try:
         t0 = time.time()
@@ -199,7 +219,7 @@ async def deploy_existing_code(request: DeployRequest):
         raise HTTPException(status_code=500, detail=f"Deploy failed: {str(e)}")
 
 @app.get("/current")
-async def get_current_animation():
+async def get_current_animation(username: str = Depends(verify_credentials)):
     """Retrieves the currently active animation."""
     try:
         doc = firestore_client.collection("system_state").document("active_animation").get()
@@ -214,7 +234,7 @@ async def get_current_animation():
         return {}
 
 @app.get("/history")
-async def get_history():
+async def get_history(username: str = Depends(verify_credentials)):
     try:
         history = []
         docs = (
